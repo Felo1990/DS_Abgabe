@@ -1,88 +1,74 @@
-import socket
-import threading
+import socket, threading, time
+from discovery import broadcast_discover
 
-# Discovery-Server Konfiguration
-DISCOVERY_SERVER = '127.0.0.1'
-DISCOVERY_PORT = 5014
+current_socket = None
+connected = False
+name = ""
 
-def get_leader():
-    """
-    Holt die aktuelle Serverliste und verbindet sich mit dem ersten erreichbaren Leader.
-    """
-    for _ in range(3):
-        try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(3)
-            sock.connect((DISCOVERY_SERVER, DISCOVERY_PORT))
-            sock.send("GET_SERVERS".encode())
-            response = sock.recv(1024).decode().strip()
-            sock.close()
+def receive(sock):
+    global connected
+    try:
+        while True:
+            msg = sock.recv(1024).decode()
+            if not msg:
+                raise Exception("Verbindung verloren.")
+            print("\n" + msg)
+    except:
+        connected = False
+        print("[Client] Verbindung verloren – versuche Reconnect...")
+        reconnect()
 
-            if response.startswith("SERVER_LIST:"):
-                servers = response.replace("SERVER_LIST:", "").split(",")
-                servers = [s.strip() for s in servers if s.strip() and s != "0.0.0.0"]
-                if servers:
-                    return servers
-        except Exception:
-            pass
-    return None
-
-def receive_messages(sock):
-    """
-    Hört dauerhaft auf eingehende Nachrichten vom Server und zeigt sie an.
-    """
+def send_loop(sock):
+    global connected
     while True:
         try:
-            message = sock.recv(1024).decode('utf-8').strip()
-            if message:
-                print(message)  # 🚀 Fix: Zeigt empfangene Nachrichten sofort an!
-        except Exception:
-            print("[CLIENT] Verbindung zum Server verloren.")
-            break
+            msg = input()
+            sock.send(f"{name}: {msg}".encode())
+        except:
+            print("[Client] Senden fehlgeschlagen – Verbindung möglicherweise verloren.")
+            connected = False
+            reconnect()
+            break  # Wichtig: Beende aktuelle send_loop
 
-def connect_to_leader():
-    """
-    Verbindet sich mit dem Leader & startet die Chat-Funktion mit automatischem Failover.
-    """
-    servers = get_leader()
-    if not servers:
-        print("[CLIENT] Kein Leader verfügbar.")
+def reconnect():
+    global current_socket, connected
+    while not connected:
+        ip, lid, port = broadcast_discover()
+        if ip:
+            try:
+                s = socket.socket()
+                s.connect((ip, port))
+                current_socket = s
+                connected = True
+                print(f"[Client] 🔁 Reconnected zu Leader (ID: {lid}) @ {ip}:{port}")
+                threading.Thread(target=receive, args=(s,), daemon=True).start()
+                threading.Thread(target=send_loop, args=(s,), daemon=True).start()  # NEU
+                return
+            except:
+                pass
+        print("[Client] Reconnect fehlgeschlagen. Neuer Versuch in 3 Sekunden...")
+        time.sleep(3)
+
+def main():
+    global current_socket, connected, name
+    name = input("Dein Name: ")
+
+    ip, lid, port = broadcast_discover()
+    if not ip:
+        print("❌ Kein Leader gefunden.")
         return
 
+    print(f"[Client] Verbinde zum Leader (ID: {lid}) @ {ip}:{port}")
     try:
-        username = input("Gib deinen Namen ein: ").strip()
-        if not username:
-            username = "Unbekannt"
-    except EOFError:
-        username = "Client_Unknown"
-
-    for server in servers:
-        try:
-            leader_ip, leader_port = server.split(":")
-            leader_port = int(leader_port)
-
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            sock.connect((leader_ip, leader_port))
-            print(f"[CLIENT] Verbunden mit Leader {leader_ip}:{leader_port}")
-
-            sock.send(f"NAME:{username}".encode('utf-8'))
-
-            # 🚀 Fix: Starte Thread, um Nachrichten dauerhaft zu empfangen!
-            threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
-
-            while True:
-                msg = input("> ")
-                if msg.lower() == "exit":
-                    break
-                sock.send(f"{msg}".encode('utf-8'))  # 🚀 Fix: Sendet NUR die Nachricht, ohne den Namen doppelt!
-
-            sock.close()
-            return  # Erfolgreich verbunden
-        except Exception:
-            print(f"[CLIENT] Verbindung zu {server} fehlgeschlagen. Versuche den nächsten...")
-
-    print("[CLIENT] Kein verfügbarer Server gefunden.")
+        s = socket.socket()
+        s.connect((ip, port))
+        current_socket = s
+        connected = True
+        threading.Thread(target=receive, args=(s,), daemon=True).start()
+        send_loop(s)
+    except:
+        print("[Client] Verbindung fehlgeschlagen. Starte Reconnect...")
+        reconnect()
 
 if __name__ == "__main__":
-    connect_to_leader()
+    main()
