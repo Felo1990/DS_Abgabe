@@ -1,65 +1,26 @@
 import socket
-import threading
-import os
 
-HOST = '0.0.0.0'
-PORT = 5014
+# Port für UDP-Broadcast
+BROADCAST_PORT = 6000
 
-server_list = set()  # Set verwenden, um doppelte Einträge zu vermeiden
+# Nachricht, die Clients senden, um einen Leader zu finden
+BROADCAST_MSG = b"DISCOVER_SERVER"
 
-print(f"[DISCOVERY] Server startet auf {HOST}:{PORT}")
+# Nachricht, die ein Server zurückschickt, wenn er Leader ist
+def build_response_msg(server_id, port):
+    return f"LEADER:{server_id}:{port}".encode()
 
-def handle_client(client_socket, addr):
-    """
-    Verarbeitet Registrierungsanfragen von Leader-Servern und sendet die aktuelle Serverliste.
-    """
-    global server_list
+# Von Clients aufgerufen: sendet Broadcast und wartet auf Leader-Antwort
+def broadcast_discover(timeout=3):
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+    s.settimeout(timeout)
+    s.sendto(BROADCAST_MSG, ('<broadcast>', BROADCAST_PORT))
 
     try:
-        data = client_socket.recv(1024).decode().strip()
-        print(f"[DEBUG] Erhaltene Nachricht von {addr}: {data}")
-
-        if data.startswith("REGISTER:"):
-            leader_info = data.replace("REGISTER:", "").strip()
-
-            # 🚀 Fix: `0.0.0.0` wird NICHT gespeichert!
-            if leader_info != "0.0.0.0" and leader_info not in server_list:
-                server_list.add(leader_info)
-                print(f"[DISCOVERY] Neuer Server registriert: {leader_info}")
-
-            response = "SERVER_LIST:" + ",".join(server_list)
-            client_socket.send(response.encode())
-
-        elif data == "GET_SERVERS":
-            if server_list:
-                response = "SERVER_LIST:" + ",".join(server_list)
-            else:
-                response = "SERVER_LIST:EMPTY"
-            
-            print(f"[DISCOVERY] Sende Serverliste: {response}")
-            client_socket.send(response.encode())
-
-    except Exception as e:
-        print(f"[ERROR] Fehler beim Registrieren von {addr}: {e}")
-    finally:
-        client_socket.close()
-
-def start_discovery_server():
-    """
-    Startet den Discovery-Server und speichert registrierte Server korrekt.
-    """
-    server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind((HOST, PORT))
-    server.listen(5)
-    print(f"[DISCOVERY] Server läuft auf {HOST}:{PORT}")
-
-    while True:
-        try:
-            client_socket, addr = server.accept()
-            threading.Thread(target=handle_client, args=(client_socket, addr), daemon=True).start()
-        except Exception as e:
-            print(f"[ERROR] Fehler bei accept(): {e}")
-
-if __name__ == "__main__":
-    start_discovery_server()
+        data, addr = s.recvfrom(1024)
+        if data.startswith(b"LEADER:"):
+            parts = data.decode().split(":")
+            return addr[0], int(parts[1]), int(parts[2])  # IP, Leader-ID, Port
+    except socket.timeout:
+        return None, None, None
